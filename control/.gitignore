@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+storage/
+.env
+.env.local
+*.tsbuildinfo
+next-env.d.ts.bak
+.env.*
+!.env.example
+dist/
+.next-*/
+storage-*/

@@ -1,0 +1,226 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LevantDeploy — production stack (ops area)
+#
+#   cp install/env.example .env   # or let install/install.sh write it
+#   docker compose up -d --build
+#
+# Services: postgres, redis, control (dashboard + API), worker (builds/deploys), caddy (edge proxy, TLS).
+# Networks:
+#   internal  — control plane only (postgres, redis, control, worker, caddy admin API). Apps never join it.
+#   apps      — fixed name ${DOCKER_NETWORK:-levant_net}; every deployed app container joins it, Caddy proxies to them.
+# Host paths: ${LEVANT_DATA_DIR:-/var/lib/levantdeploy} is mounted at the SAME path in control + worker so paths
+# handed to the Docker daemon (build contexts, compose bind mounts, volumes) resolve identically on the host.
+# ─────────────────────────────────────────────────────────────────────────────
+name: ${COMPOSE_PROJECT_NAME:-levantdeploy}
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-levant}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-levantdeploy}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+  SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+  PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:?set PLATFORM_DOMAIN in .env}
+  PLATFORM_SCHEME: ${PLATFORM_SCHEME:-https}
+  DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env}
+  APP_URL: ${APP_URL:-}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+  STORAGE_DIR: ${LEVANT_DATA_DIR:-/var/lib/levantdeploy}/storage
+  WORK_DIR: ${LEVANT_DATA_DIR:-/var/lib/levantdeploy}/work
+  LEVANT_DATA_DIR: ${LEVANT_DATA_DIR:-/var/lib/levantdeploy}
+  LEVANT_INSTALL_DIR: ${LEVANT_INSTALL_DIR:-/opt/levantdeploy}
+  DOCKER_SOCKET: /var/run/docker.sock
+  DOCKER_NETWORK: ${DOCKER_NETWORK:-levant_net}
+  # edge proxy contract (runtime area, src/lib/proxy): the worker/control POST the full Caddy config to /load
+  # admin binds to the "caddy-admin" alias, which exists only on the internal network (apps can't reach it)
+  CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://caddy-admin:2019}
+  CADDY_ADMIN_LISTEN: ${CADDY_ADMIN_LISTEN:-caddy-admin:2019}
+  CONTROL_UPSTREAM: ${CONTROL_UPSTREAM:-control:3000}
+  PROXY_TLS: ${TLS_MODE:-acme}
+  ACME_EMAIL: ${ACME_EMAIL:-}
+  CADDY_LOG_DIR: /var/log/caddy
+  CADDY_ACCESS_LOG: /var/log/levant-caddy/access.log
+  SERVER_IPS: ${SERVER_IPS:-}
+  DNS_RESOLVERS: ${DNS_RESOLVERS:-1.1.1.1,8.8.8.8}
+  # LevantBase (backend projects): {ref}.BASE_DOMAIN + studio-{ref}.BASE_DOMAIN (wildcard DNS *.BASE_DOMAIN)
+  BASE_DOMAIN: ${BASE_DOMAIN:-}
+  BASE_IMAGE_MIRROR: ${BASE_IMAGE_MIRROR:-}
+  BASE_EGRESS_PROXY: ${BASE_EGRESS_PROXY:-}
+  # must be a path inside LEVANT_DATA_DIR (mounted at the same path in worker + base stacks)
+  BASE_EGRESS_CA_FILE: ${BASE_EGRESS_CA_FILE:-}
+  BASE_DB_PORT_RANGE: ${BASE_DB_PORT_RANGE:-54000-54999}
+  # AI Builder: previews run as levant/builder-runtime containers on the apps network (preview-{id}.PLATFORM_DOMAIN)
+  BUILDER_RUNTIME_IMAGE: ${BUILDER_RUNTIME_IMAGE:-levant/builder-runtime:next15}
+  BUILDER_PREVIEWS: ${BUILDER_PREVIEWS:-on}
+  BUILDER_PREVIEW_IDLE_MIN: ${BUILDER_PREVIEW_IDLE_MIN:-20}
+  BUILDER_PREVIEW_MEMORY_MB: ${BUILDER_PREVIEW_MEMORY_MB:-2048}
+  BUILDER_EGRESS_PROXY: ${BUILDER_EGRESS_PROXY:-}
+  BUILDER_EGRESS_NO_PROXY: ${BUILDER_EGRESS_NO_PROXY:-}
+  BUILDER_EGRESS_CA_FILE: ${BUILDER_EGRESS_CA_FILE:-}
+  # AI providers (optional; normally set in Settings → AI providers, stored encrypted). Empty = not configured.
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+  NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+  CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+  CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+  CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+  OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+  UNOROUTER_API_KEY: ${UNOROUTER_API_KEY:-}
+  ORCAROUTER_API_KEY: ${ORCAROUTER_API_KEY:-}
+  KILO_API_KEY: ${KILO_API_KEY:-}
+  POLLINATIONS_KEY: ${POLLINATIONS_KEY:-}
+  LLM7_API_KEY: ${LLM7_API_KEY:-}
+  LOGFARE_API_KEY: ${LOGFARE_API_KEY:-}
+  OVH_AI_ENDPOINTS_TOKEN: ${OVH_AI_ENDPOINTS_TOKEN:-}
+  REGISTRATION: ${REGISTRATION:-invite}
+  LEVANT_UPDATE_URL: ${LEVANT_UPDATE_URL:-}
+  LEVANT_DB_SYNC: ${LEVANT_DB_SYNC:-auto}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_FROM: ${SMTP_FROM:-LevantDeploy <no-reply@levantdeploy.local>}
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-levant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-levantdeploy}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 256m
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    logging: *logging
+
+  control:
+    image: ${LEVANT_IMAGE:-levantdeploy/control}:${LEVANT_VERSION:-latest}
+    build:
+      context: ./control
+      additional_contexts:
+        examples: ./examples
+        cli: ./cli
+        basestack: ./base-stack
+        buildertemplate: ./builder-template
+      args:
+        LEVANT_VERSION: ${LEVANT_VERSION:-}
+    command: ["web"]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      PORT: "3000"
+    group_add: ["${DOCKER_GID:-999}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LEVANT_DATA_DIR:-/var/lib/levantdeploy}:${LEVANT_DATA_DIR:-/var/lib/levantdeploy}
+    # internal: DB/Redis/Caddy admin · apps: invokeFunction() calls Base gateways directly
+    networks: [internal, apps]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *logging
+
+  worker:
+    image: ${LEVANT_IMAGE:-levantdeploy/control}:${LEVANT_VERSION:-latest}
+    command: ["worker"]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    group_add: ["${DOCKER_GID:-999}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LEVANT_DATA_DIR:-/var/lib/levantdeploy}:${LEVANT_DATA_DIR:-/var/lib/levantdeploy}
+      - caddy_logs:/var/log/levant-caddy:ro
+    # internal: DB/Redis/Caddy admin · apps: health checks against freshly started app containers
+    networks: [internal, apps]
+    stop_grace_period: 70s
+    healthcheck:
+      test: ["CMD", "node", "-e", "const R=require('ioredis');const r=new R(process.env.REDIS_URL,{lazyConnect:true,maxRetriesPerRequest:1});r.get('ld:worker:heartbeat').then(v=>process.exit(v&&Date.now()-Number(v)<120000?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    depends_on:
+      control: { condition: service_healthy }
+    logging: *logging
+
+  caddy:
+    image: ${LEVANT_CADDY_IMAGE:-levantdeploy/caddy}:${LEVANT_VERSION:-latest}
+    build:
+      context: ./install/caddy
+    restart: unless-stopped
+    environment:
+      DASHBOARD_HOST: ${DASHBOARD_HOST}
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      TLS_MODE: ${TLS_MODE:-acme}
+      CONTROL_UPSTREAM: control:3000
+      CADDY_ADMIN_LISTEN: caddy-admin:2019
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks:
+      # the admin API binds to the "caddy-admin" alias, which only exists on the internal network:
+      # app containers (on the apps network) cannot reach it.
+      internal:
+        aliases: [caddy-admin]
+      apps: {}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://caddy-admin:2019/config/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      control: { condition: service_started }
+    logging: *logging
+
+networks:
+  internal:
+    driver: bridge
+  apps:
+    name: ${DOCKER_NETWORK:-levant_net}
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

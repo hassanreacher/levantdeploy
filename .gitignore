@@ -1,0 +1,17 @@
+# dependencies & build output
+node_modules/
+.next/
+.next-*/
+cli/dist/
+*.tsbuildinfo
+*.log
+.levant/
+
+# local data
+control/storage/
+control/storage-*/
+
+# secrets — never commit real env files
+.env
+.env.*
+!.env.example

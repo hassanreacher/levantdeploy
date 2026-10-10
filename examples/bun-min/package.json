@@ -1,0 +1,7 @@
+{
+  "name": "bun-min",
+  "private": true,
+  "module": "index.ts",
+  "scripts": { "start": "bun index.ts" },
+  "engines": { "bun": ">=1.1" }
+}

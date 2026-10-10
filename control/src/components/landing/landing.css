@@ -1,0 +1,217 @@
+/* Landing page (marketing) styles. Everything animated is opt-in via prefers-reduced-motion: no-preference. */
+
+.lf-hero-bg {
+  background:
+    radial-gradient(60% 55% at 50% 62%, rgb(var(--accent) / 0.16), transparent 70%),
+    radial-gradient(40% 40% at 85% 30%, rgb(var(--accent) / 0.08), transparent 70%),
+    radial-gradient(35% 35% at 12% 40%, rgb(var(--fg) / 0.05), transparent 70%);
+}
+.light .lf-hero-bg {
+  background:
+    radial-gradient(60% 55% at 50% 62%, rgb(var(--accent) / 0.12), transparent 70%),
+    radial-gradient(40% 40% at 85% 30%, rgb(var(--accent) / 0.06), transparent 70%);
+}
+
+.lf-gradient-text {
+  background: linear-gradient(180deg, rgb(var(--fg)) 30%, rgb(var(--fg) / 0.62));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* scroll reveal (see reveal-observer.tsx) — hidden only once JS is ready, never for reduced motion */
+@media (prefers-reduced-motion: no-preference) {
+  .lf-reveal-ready [data-reveal]:not([data-in]) {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  .lf-reveal-ready [data-reveal] {
+    transition:
+      opacity 0.7s cubic-bezier(0.2, 0.7, 0.2, 1),
+      transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+    transition-delay: var(--lf-delay, 0ms);
+  }
+}
+
+@keyframes lf-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+@keyframes lf-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+@keyframes lf-travel {
+  0% {
+    left: 0%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+@keyframes lf-travel-y {
+  0% {
+    top: 0%;
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+@keyframes lf-bar {
+  0% {
+    transform: scaleX(0);
+  }
+  60%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes lf-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes lf-wave {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+}
+@keyframes lf-slide-in {
+  0%,
+  15% {
+    transform: translateY(-7px);
+    opacity: 0;
+  }
+  45%,
+  80% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(3px);
+    opacity: 0;
+  }
+}
+@keyframes lf-dot-x {
+  0%,
+  100% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+}
+@keyframes lf-row {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  33% {
+    transform: translateY(4.5px);
+  }
+  66% {
+    transform: translateY(9px);
+  }
+}
+@keyframes lf-fill {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lf-anim-travel {
+    animation: lf-travel 3.6s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+  .lf-anim-travel-y {
+    animation: lf-travel-y 3.6s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+  .lf-anim-bar {
+    transform-origin: left;
+    animation: lf-bar 3.6s ease-out infinite;
+  }
+  .lf-anim-blink {
+    animation: lf-blink 1.6s ease-in-out infinite;
+  }
+  /* icon micro-animations play on card hover, and once on reveal */
+  .lf-icon .lf-wave {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: lf-wave 2.4s ease-out infinite;
+  }
+  .lf-icon .lf-wave.d2 {
+    animation-delay: 0.8s;
+  }
+  .lf-icon .lf-slide {
+    animation: lf-slide-in 2.8s ease-in-out infinite;
+  }
+  .lf-icon .lf-dotx {
+    animation: lf-dot-x 1.6s ease-in-out infinite;
+  }
+  .lf-icon .lf-rowhl {
+    animation: lf-row 3s steps(1, end) infinite;
+  }
+  .lf-icon .lf-fill {
+    animation: lf-fill 2s ease-in-out infinite;
+  }
+  .lf-icon .lf-fill.d2 {
+    animation-delay: 0.4s;
+  }
+  .lf-icon .lf-fill.d3 {
+    animation-delay: 0.8s;
+  }
+  .lf-icon .lf-blink {
+    animation: lf-blink 1.2s ease-in-out infinite;
+  }
+}
+
+.lf-faq summary::-webkit-details-marker {
+  display: none;
+}
+.lf-faq[open] .lf-faq-icon {
+  transform: rotate(45deg);
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens (RGB triplets so Tailwind can apply alpha: bg-fg/10). Dark is the default theme. */
+:root,
+.dark {
+  color-scheme: dark;
+  --bg: 0 0 0;
+  --bg-subtle: 10 10 10;
+  --surface: 17 17 17;
+  --surface-2: 26 26 26;
+  --border: 38 38 38;
+  --border-strong: 64 64 64;
+  --fg: 237 237 237;
+  --muted: 161 161 161;
+  --subtle: 112 112 112;
+  --accent: 50 145 255;
+  --accent-fg: 255 255 255;
+  --success: 69 196 120;
+  --warning: 245 166 35;
+  --danger: 255 85 85;
+  --info: 50 145 255;
+}
+
+.light {
+  color-scheme: light;
+  --bg: 255 255 255;
+  --bg-subtle: 250 250 250;
+  --surface: 255 255 255;
+  --surface-2: 244 244 245;
+  --border: 234 234 234;
+  --border-strong: 210 210 210;
+  --fg: 23 23 23;
+  --muted: 102 102 102;
+  --subtle: 143 143 143;
+  --accent: 0 112 243;
+  --accent-fg: 255 255 255;
+  --success: 22 163 74;
+  --warning: 217 119 6;
+  --danger: 220 38 38;
+  --info: 0 112 243;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-bg text-fg font-sans text-sm;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.35);
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent) / 0.8);
+    outline-offset: 2px;
+  }
+  /* thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border-strong)) transparent;
+  }
+}
+
+@layer components {
+  .container-page {
+    @apply mx-auto w-full max-w-[1200px] px-4 sm:px-6;
+  }
+  .kbd {
+    @apply inline-flex h-5 min-w-5 items-center justify-center rounded border border-border bg-surface-2 px-1 font-mono text-[11px] text-muted;
+  }
+  .link {
+    @apply text-fg underline decoration-border-strong underline-offset-4 transition-colors hover:decoration-fg;
+  }
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgb(var(--border) / 0.5) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(var(--border) / 0.5) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+}

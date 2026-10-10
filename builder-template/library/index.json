@@ -1,0 +1,16 @@
+[
+  { "id": "navbar", "name": "Navbar", "category": "navigation", "description": "Sticky top navigation with logo, links, CTA and mobile menu" },
+  { "id": "hero", "name": "Hero", "category": "header", "description": "Big headline, subtitle, badge and two call-to-action buttons" },
+  { "id": "features", "name": "Features", "category": "content", "description": "Six feature cards with icons" },
+  { "id": "stats", "name": "Stats", "category": "content", "description": "Four key numbers in a band" },
+  { "id": "pricing", "name": "Pricing", "category": "commerce", "description": "Three pricing plans with a highlighted plan" },
+  { "id": "testimonials", "name": "Testimonials", "category": "social-proof", "description": "Three customer quotes with ratings" },
+  { "id": "team", "name": "Team", "category": "content", "description": "Team members with avatars and roles" },
+  { "id": "gallery", "name": "Gallery", "category": "media", "description": "Responsive image grid" },
+  { "id": "blog-list", "name": "Blog list", "category": "content", "description": "Three latest posts as cards" },
+  { "id": "faq", "name": "FAQ", "category": "content", "description": "Accordion of frequently asked questions" },
+  { "id": "cta", "name": "Call to action", "category": "conversion", "description": "Colored banner with a strong call to action" },
+  { "id": "contact-form", "name": "Contact form", "category": "forms", "description": "Name/email/message form saved to the backend (contact_messages table)", "backend": true },
+  { "id": "auth-forms", "name": "Sign in / Sign up", "category": "forms", "description": "Email + password sign-in and sign-up tabs (backend auth)", "backend": true },
+  { "id": "footer", "name": "Footer", "category": "navigation", "description": "Multi-column footer with links and copyright" }
+]

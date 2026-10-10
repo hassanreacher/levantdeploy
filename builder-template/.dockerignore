@@ -1,0 +1,4 @@
+# ops: keep build contexts (control image + runtime/build.sh) small
+**/node_modules
+**/.next
+**/.levant

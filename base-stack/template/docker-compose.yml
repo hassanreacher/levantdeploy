@@ -1,0 +1,541 @@
+# LevantBase per-project stack — derived from base-stack/upstream/docker-compose.yml
+# (github.com/supabase/supabase docker/, Apache-2.0; pinned commit in base-stack/upstream/UPSTREAM.txt).
+#
+# Rendered by control/src/lib/base/render.ts into STORAGE_DIR/base/<ref>/ together with `.env` (all ${...} below)
+# and run as `docker compose -p lb_<ref> --env-file .env up -d`. Every deviation from upstream is marked
+# "LEVANTBASE:" and listed in base-stack/README.md. Never edit a rendered copy by hand — re-render instead.
+#
+# LEVANTBASE (global):
+#   - no host port bindings at all; only `api-gw` joins the shared ${LB_PUBLIC_NETWORK} (levant_net) so Caddy can reach it
+#   - per-project internal network lb_<ref>_net (no egress) + lb_<ref>_egress (only auth + functions: SMTP/OAuth/fetch)
+#   - container names lb_<ref>_<service>, labels levant.base=<ref>, resource limits from the plan
+#   - images come from LB_IMAGE_* (upstream tags, optionally behind a registry mirror prefix)
+#   - studio: profile "studio" (started on demand), supavisor: profile "pooler" (plan option)
+#   - analytics/vector/logflare are not part of upstream's default compose any more (docker-compose.logs.yml) → not used
+
+name: lb_${LB_REF}
+
+x-levant: &levant
+  labels:
+    levant.managed: "true"
+    levant.base: ${LB_REF}
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+
+  studio:
+    <<: *levant
+    container_name: lb_${LB_REF}_studio
+    image: ${LB_IMAGE_STUDIO}
+    # LEVANTBASE: on demand only (`--profile studio up -d studio`), stopped again after 30 min idle
+    profiles: ["studio"]
+    networks: [net]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3000/api/platform/profile').then((r) => {if (r.status !== 200) throw new Error(r.status)})\""
+        ]
+      timeout: 10s
+      interval: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_STUDIO}", memory: "${LB_MEM_STUDIO}" }
+    environment:
+      HOSTNAME: "0.0.0.0"
+      NEXT_TELEMETRY_DISABLED: "1"
+
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER_READ_WRITE: postgres
+
+      PG_META_CRYPTO_KEY: ${PG_META_CRYPTO_KEY}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_DB_EXTRA_SEARCH_PATH: ${PGRST_DB_EXTRA_SEARCH_PATH:-public}
+
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      SUPABASE_URL: http://api-gw:8000
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+
+      ENABLED_FEATURES_LOGS_ALL: "false"
+
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
+      EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /app/edge-functions
+    volumes:
+      - ./volumes/snippets:/app/snippets:z
+      - ./volumes/functions:/app/edge-functions:ro,z
+
+  api-gw:
+    <<: *levant
+    container_name: lb_${LB_REF}_api-gw
+    image: ${LB_IMAGE_GATEWAY}
+    networks:
+      net:
+        aliases:
+          - envoy
+          - kong
+      # LEVANTBASE: the only container on the shared network. Caddy dials lb_<ref>_api-gw:8000 (API) and :8001 (Studio
+      # gate); LevantDeploy apps reach the API internally at http://base-<ref>:8000.
+      public:
+        aliases:
+          - base-${LB_REF}
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/8000'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # LEVANTBASE: upstream waits for studio (service_healthy); studio is on demand here → no dependency
+    # LEVANTBASE: no `ports:` (upstream publishes 8000 on the host)
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_GATEWAY}", memory: "${LB_MEM_GATEWAY}" }
+    volumes:
+      - ./volumes/api/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./volumes/api/envoy/cds.template.yaml:/etc/envoy/cds.template.yaml:ro
+      - ./volumes/api/envoy/lds.template.yaml:/etc/envoy/lds.template.yaml:ro
+      - ./volumes/api/envoy/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      # LEVANTBASE: rendered e-mail templates (listener :8002, see lds.template.yaml)
+      - ./volumes/templates:/etc/envoy/templates:ro
+    environment:
+      LB_REF: ${LB_REF}
+      # changes when the templates change → compose recreates the gateway (Envoy reads direct_response files at load)
+      LB_TEMPLATES_HASH: ${LB_TEMPLATES_HASH}
+      LB_STUDIO_GATE_SECRET: ${LB_STUDIO_GATE_SECRET}
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      ANON_KEY_ASYMMETRIC: ${ANON_KEY_ASYMMETRIC:-}
+      SERVICE_ROLE_KEY_ASYMMETRIC: ${SERVICE_ROLE_KEY_ASYMMETRIC:-}
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+
+  auth:
+    <<: *levant
+    container_name: lb_${LB_REF}_auth
+    image: ${LB_IMAGE_AUTH}
+    # LEVANTBASE: + egress network (SMTP, OAuth providers)
+    networks: [net, egress]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_AUTH}", memory: "${LB_MEM_AUTH}" }
+    # LEVANTBASE: extra GOTRUE_* settings (OAuth providers, MFA, SMTP extras, hooks) rendered from the project settings;
+    # keys set in `environment:` below win over this file.
+    env_file:
+      - ./auth.env
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
+
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT}
+      GOTRUE_SMTP_USER: ${SMTP_USER}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      GOTRUE_MAILER_URLPATHS_INVITE: ${MAILER_URLPATHS_INVITE}
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION}
+      GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
+
+      GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
+      GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
+
+      # LEVANTBASE: optional outbound proxy (servers behind a corporate proxy); empty = direct
+      HTTP_PROXY: ${LB_HTTP_PROXY:-}
+      HTTPS_PROXY: ${LB_HTTP_PROXY:-}
+      NO_PROXY: ${LB_NO_PROXY:-}
+
+  rest:
+    <<: *levant
+    container_name: lb_${LB_REF}_rest
+    image: ${LB_IMAGE_REST}
+    networks: [net]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_REST}", memory: "${LB_MEM_REST}" }
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_DB_EXTRA_SEARCH_PATH: ${PGRST_DB_EXTRA_SEARCH_PATH:-public}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_ADMIN_SERVER_HOST: localhost
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    command: ["postgrest"]
+
+  realtime:
+    <<: *levant
+    # LEVANTBASE: upstream names this container `realtime-dev.supabase-realtime` (tenant id parsing). The gateway already
+    # rewrites the Host header to that literal, so a unique per-project name works; the alias keeps internal callers happy.
+    container_name: lb_${LB_REF}_realtime
+    image: ${LB_IMAGE_REALTIME}
+    networks:
+      net:
+        aliases:
+          - realtime-dev.supabase-realtime
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sSfL --head -o /dev/null -H \"Authorization: Bearer ${ANON_KEY}\" http://localhost:4000/api/tenants/realtime-dev/health"
+        ]
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_REALTIME}", memory: "${LB_MEM_REALTIME}" }
+    environment:
+      PORT: 4000
+      DB_HOST: ${POSTGRES_HOST}
+      DB_PORT: ${POSTGRES_PORT}
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
+      # LEVANTBASE: per-project key instead of upstream's default "supabaserealtime"
+      DB_ENC_KEY: ${REALTIME_DB_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+      DISABLE_HEALTHCHECK_LOGGING: "true"
+
+  storage:
+    <<: *levant
+    container_name: lb_${LB_REF}_storage
+    image: ${LB_IMAGE_STORAGE}
+    networks: [net]
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      imgproxy:
+        condition: service_started
+    healthcheck:
+      # LEVANTBASE: localhost instead of the `storage` service name (same check)
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/status"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_STORAGE}", memory: "${LB_MEM_STORAGE}" }
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      STORAGE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      REQUEST_ALLOW_X_FORWARDED_PATH: "true"
+      # LEVANTBASE: plan "max upload" instead of upstream's fixed 50 MB
+      FILE_SIZE_LIMIT: ${LB_FILE_SIZE_LIMIT}
+      STORAGE_BACKEND: file
+      GLOBAL_S3_BUCKET: ${GLOBAL_S3_BUCKET}
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: ${STORAGE_TENANT_ID}
+      REGION: ${REGION}
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+      S3_PROTOCOL_ACCESS_KEY_ID: ${S3_PROTOCOL_ACCESS_KEY_ID}
+      S3_PROTOCOL_ACCESS_KEY_SECRET: ${S3_PROTOCOL_ACCESS_KEY_SECRET}
+    volumes:
+      # LEVANTBASE: named volume (lb_<ref>_storage-data) instead of the ./volumes/storage bind mount
+      - storage-data:/var/lib/storage
+
+  imgproxy:
+    <<: *levant
+    container_name: lb_${LB_REF}_imgproxy
+    image: ${LB_IMAGE_IMGPROXY}
+    networks: [net]
+    volumes:
+      - storage-data:/var/lib/storage:ro
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_IMGPROXY}", memory: "${LB_MEM_IMGPROXY}" }
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_AUTO_WEBP: ${IMGPROXY_AUTO_WEBP}
+      IMGPROXY_MAX_SRC_RESOLUTION: 16.8
+
+  meta:
+    <<: *levant
+    container_name: lb_${LB_REF}_meta
+    image: ${LB_IMAGE_META}
+    networks: [net]
+    depends_on:
+      db:
+        condition: service_healthy
+    # LEVANTBASE: health check added (upstream has none) so provisioning can wait for it
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then((r) => {if (r.status !== 200) throw new Error(r.status)})\""]
+      timeout: 5s
+      interval: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_META}", memory: "${LB_MEM_META}" }
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: ${POSTGRES_HOST}
+      PG_META_DB_PORT: ${POSTGRES_PORT}
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CRYPTO_KEY: ${PG_META_CRYPTO_KEY}
+
+  functions:
+    <<: *levant
+    container_name: lb_${LB_REF}_functions
+    image: ${LB_IMAGE_FUNCTIONS}
+    # LEVANTBASE: + egress network (functions call external APIs)
+    networks: [net, egress]
+    volumes:
+      - ./volumes/functions:/home/deno/functions:z
+      - deno-cache:/root/.cache/deno
+      - ./ca:/etc/levant-ca:ro
+    depends_on:
+      api-gw:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000'"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_FUNCTIONS}", memory: "${LB_MEM_FUNCTIONS}" }
+    env_file:
+      - ./functions.env
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_URL: http://api-gw:8000
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_PUBLISHABLE_KEYS: "{\"default\":\"${SUPABASE_PUBLISHABLE_KEY:-}\"}"
+      SUPABASE_SECRET_KEYS: "{\"default\":\"${SUPABASE_SECRET_KEY:-}\"}"
+      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      VERIFY_JWT: "${FUNCTIONS_VERIFY_JWT}"
+    command:
+      [
+        "start",
+        "--user-worker-request-idle-timeout",
+        "150000",
+        "--main-service",
+        "/home/deno/functions/main"
+      ]
+
+  db:
+    <<: *levant
+    container_name: lb_${LB_REF}_db
+    image: ${LB_IMAGE_DB}
+    networks: [net]
+    volumes:
+      - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      # LEVANTBASE: named volume (lb_<ref>_db-data) instead of the ./volumes/db/data bind mount
+      - db-data:/var/lib/postgresql/data
+      - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
+      - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
+      # LEVANTBASE: pg_graphql enabled on new projects (hosted parity)
+      - ./volumes/db/graphql.sql:/docker-entrypoint-initdb.d/migrations/99-graphql.sql:Z
+      - db-config:/etc/postgresql-custom
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_DB}", memory: "${LB_MEM_DB}" }
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      POSTGRES_DB: ${POSTGRES_DB}
+      JWT_EXP: ${JWT_EXPIRY}
+    command:
+      [
+        "postgres",
+        "-c",
+        "config_file=/etc/postgresql/postgresql.conf",
+        "-c",
+        "log_min_messages=fatal"
+      ]
+
+  supavisor:
+    <<: *levant
+    container_name: lb_${LB_REF}_pooler
+    image: ${LB_IMAGE_POOLER}
+    # LEVANTBASE: optional (plan), profile "pooler"; not on levant_net — apps and the optional public port reach it
+    # through the gateway's TCP listeners (5432 session / 6543 transaction, see lds.template.yaml)
+    profiles: ["pooler"]
+    networks: [net]
+    volumes:
+      - ./volumes/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,z
+      # LEVANTBASE: per-project self-signed TLS certificate (generated on first start, kept across restarts)
+      - pooler-tls:/etc/pooler/tls
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "http://127.0.0.1:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { cpus: "${LB_CPU_POOLER}", memory: "${LB_MEM_POOLER}" }
+    environment:
+      PORT: 4000
+      # LEVANTBASE: the image's entrypoint runs `ulimit -n ${RLIMIT_NOFILE:-100000}` under `set -e`; hosts whose Docker
+      # hard limit is below 100000 crash-loop the pooler (seen in the sandbox: hard limit 20000). 10000 like realtime.
+      RLIMIT_NOFILE: "10000"
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
+      CLUSTER_POSTGRES: "true"
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: ${POOLER_TENANT_ID}
+      POOLER_DEFAULT_POOL_SIZE: ${POOLER_DEFAULT_POOL_SIZE}
+      POOLER_MAX_CLIENT_CONN: ${POOLER_MAX_CLIENT_CONN}
+      POOLER_POOL_MODE: transaction
+      DB_POOL_SIZE: ${POOLER_DB_POOL_SIZE}
+      # LEVANTBASE: client TLS (self-signed per project, CN = the project's API host) + enforce when public
+      GLOBAL_DOWNSTREAM_CERT_PATH: /etc/pooler/tls/server.crt
+      GLOBAL_DOWNSTREAM_KEY_PATH: /etc/pooler/tls/server.key
+      POOLER_ENFORCE_SSL: ${LB_POOLER_ENFORCE_SSL}
+      LB_DB_CERT_CN: ${LB_DB_CERT_CN}
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "[ -s /etc/pooler/tls/server.crt ] || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj \"/CN=$${LB_DB_CERT_CN}\" -addext \"subjectAltName=DNS:$${LB_DB_CERT_CN}\" -keyout /etc/pooler/tls/server.key -out /etc/pooler/tls/server.crt; /app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
+      ]
+
+# LEVANTBASE: explicit per-project networks instead of the implicit `default`
+networks:
+  net:
+    name: lb_${LB_REF}_net
+    internal: true
+    labels:
+      levant.base: ${LB_REF}
+  egress:
+    name: lb_${LB_REF}_egress
+    labels:
+      levant.base: ${LB_REF}
+  public:
+    name: ${LB_PUBLIC_NETWORK}
+    external: true
+
+volumes:
+  db-config:
+    name: lb_${LB_REF}_db-config
+    labels: { levant.base: "${LB_REF}" }
+  deno-cache:
+    name: lb_${LB_REF}_deno-cache
+    labels: { levant.base: "${LB_REF}" }
+  db-data:
+    name: lb_${LB_REF}_db-data
+    labels: { levant.base: "${LB_REF}" }
+  storage-data:
+    name: lb_${LB_REF}_storage-data
+    labels: { levant.base: "${LB_REF}" }
+  pooler-tls:
+    name: lb_${LB_REF}_pooler-tls
+    labels: { levant.base: "${LB_REF}" }

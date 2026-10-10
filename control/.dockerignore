@@ -1,0 +1,17 @@
+# ops: keep the build context small and secret-free
+node_modules
+.next*
+dist
+storage*
+tests
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+npm-debug.log*
+.git
+.DS_Store
+Dockerfile
+.dockerignore
+docker-compose*.yml

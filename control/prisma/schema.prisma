@@ -1,0 +1,1314 @@
+// LevantDeploy control-plane schema. Model names are binding (docs/SPEC.md).
+// Owned by foundation. Other areas: small additive fields are OK — note them in docs/requests/<area>.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum SourceType {
+  GITHUB
+  GIT
+  UPLOAD
+  IMAGE
+}
+
+enum ProjectKind {
+  WEB
+  WORKER
+  STATIC
+  COMPOSE
+}
+
+enum DeploymentTarget {
+  PRODUCTION
+  PREVIEW
+}
+
+enum DeploymentStatus {
+  QUEUED
+  BUILDING
+  DEPLOYING
+  READY
+  ERROR
+  CANCELED
+  SUPERSEDED
+}
+
+enum DeploymentTrigger {
+  GIT_PUSH
+  PULL_REQUEST
+  MANUAL
+  REDEPLOY
+  CLI
+  API
+  PROMOTE
+  ROLLBACK
+}
+
+enum LogStream {
+  BUILD
+  RUNTIME
+}
+
+enum EnvTarget {
+  PRODUCTION
+  PREVIEW
+  DEVELOPMENT
+}
+
+enum DomainKind {
+  PLATFORM
+  CUSTOM
+}
+
+enum DomainStatus {
+  PENDING
+  VERIFYING
+  ACTIVE
+  FAILED
+  DISABLED
+}
+
+enum DatabaseEngine {
+  POSTGRES
+  MYSQL
+  REDIS
+  MONGO
+}
+
+enum DatabaseStatus {
+  PROVISIONING
+  RUNNING
+  STOPPED
+  ERROR
+  DELETING
+}
+
+enum BackupStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum JobRunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+enum UploadStatus {
+  PENDING
+  COMPLETE
+  FAILED
+  EXPIRED
+}
+
+enum NotificationType {
+  EMAIL
+  WEBHOOK
+  TELEGRAM
+  SLACK
+  /// dashboard area (additive)
+  DISCORD
+}
+
+enum ServerStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+}
+
+enum AgentMessageRole {
+  USER
+  ASSISTANT
+  TOOL
+  SYSTEM
+}
+
+enum AgentActionStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+// ───────────────────────────── Identity ─────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  avatar          String?
+  /// Encrypted (encryptString) base32 TOTP secret. Only active when totpEnabled.
+  totpSecret      String?
+  totpEnabled     Boolean   @default(false)
+  /// sha256 hashes of unused recovery codes
+  recoveryCodes   String[]  @default([])
+  /// Platform owner/admin (first registered user). Can manage platform settings and servers.
+  isPlatformOwner Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  disabledAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions            Session[]
+  memberships         Membership[]
+  inbox               UserNotification[]
+  apiTokens           ApiToken[]
+  auditLogs           AuditLog[]
+  passwordResets      PasswordReset[]
+  invitesSent         Invite[]             @relation("InviteInviter")
+  invitesAccepted     Invite[]             @relation("InviteAcceptedBy")
+  projectsCreated     Project[]            @relation("ProjectCreatedBy")
+  deploymentsCreated  Deployment[]         @relation("DeploymentCreatedBy")
+  envVarsCreated      EnvVar[]             @relation("EnvVarCreatedBy")
+  uploads             Upload[]
+  agentConversations  AgentConversation[]
+  agentApprovals      AgentAction[]        @relation("AgentActionApprover")
+  baseProjectsCreated BaseProject[]        @relation("BaseProjectCreatedBy")
+  /// plans area: email verification links + plan upgrade requests
+  emailVerifications  EmailVerification[]
+  planRequests        PlanUpgradeRequest[]
+  /// builder-core
+  builderProjects     BuilderProject[]     @relation("BuilderProjectCreatedBy")
+  builderMessages     BuilderMessage[]     @relation("BuilderMessageAuthor")
+  builderRuns         BuilderRun[]         @relation("BuilderRunCreatedBy")
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId, revokedAt])
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  name       String
+  slug       String   @unique
+  avatar     String?
+  /// Personal team auto-created for each user on register.
+  isPersonal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  memberships         Membership[]
+  invites             Invite[]
+  projects            Project[]
+  apiTokens           ApiToken[]
+  auditLogs           AuditLog[]
+  sharedEnvGroups     SharedEnvGroup[]
+  databases           Database[]
+  uploads             Upload[]
+  githubInstallations GitHubInstallation[]
+  webhooks            Webhook[]
+  notifications       Notification[]
+  agentConversations  AgentConversation[]
+  baseProjects        BaseProject[]
+
+  /// plans area: assigned plan (null = automatic: the platform owner's teams get the internal unlimited plan, others the default plan)
+  planId          String?
+  plan            Plan?                @relation(fields: [planId], references: [id], onDelete: SetNull)
+  usageCounters   UsageCounter[]
+  usageAlerts     PlanUsageAlert[]
+  planRequests    PlanUpgradeRequest[]
+  /// builder-core
+  builderProjects BuilderProject[]
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      TeamRole @default(MEMBER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model Invite {
+  id           String    @id @default(cuid())
+  teamId       String
+  team         Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Optional: when set only this email can accept.
+  email        String?
+  role         TeamRole  @default(MEMBER)
+  tokenHash    String    @unique
+  invitedById  String?
+  invitedBy    User?     @relation("InviteInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?
+  acceptedBy   User?     @relation("InviteAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([teamId])
+}
+
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// When set the token can only act on this team.
+  teamId     String?
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name       String
+  /// sha256(token) — the plain token is shown once.
+  tokenHash  String    @unique
+  /// First characters of the token, for display ("ld_ab12…")
+  prefix     String
+  /// e.g. ["*"] or ["deployments:write","env:read"]
+  scopes     String[]  @default(["*"])
+  lastUsedAt DateTime?
+  lastUsedIp String?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  auditLogs AuditLog[]
+
+  @@index([userId])
+  @@index([teamId])
+}
+
+model AuditLog {
+  id         String    @id @default(cuid())
+  teamId     String?
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiTokenId String?
+  apiToken   ApiToken? @relation(fields: [apiTokenId], references: [id], onDelete: SetNull)
+  /// dotted verb, e.g. "project.create", "deployment.cancel", "member.role_change"
+  action     String
+  targetType String?
+  targetId   String?
+  meta       Json      @default("{}")
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([teamId, createdAt])
+  @@index([userId, createdAt])
+  @@index([targetType, targetId])
+}
+
+// ───────────────────────────── Projects & deployments ─────────────────────────────
+
+model Project {
+  id          String      @id @default(cuid())
+  teamId      String
+  team        Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name        String
+  /// unique per team; also used for `{slug}.{PLATFORM_DOMAIN}` and deployment URLs
+  slug        String
+  description String?
+  framework   String?
+  kind        ProjectKind @default(WEB)
+  sourceType  SourceType  @default(GITHUB)
+
+  // Source
+  gitUrl               String?
+  /// SSH deploy key for generic Git URLs (public part shown to the user, private part encrypted)
+  gitDeployKeyPublic   String?
+  gitDeployKeyEnc      String?
+  githubInstallationId String?
+  githubInstallation   GitHubInstallation? @relation(fields: [githubInstallationId], references: [id], onDelete: SetNull)
+  githubRepoId         BigInt?
+  githubRepoFullName   String?
+  productionBranch     String              @default("main")
+  rootDirectory        String              @default("")
+  /// For sourceType IMAGE: e.g. "ghcr.io/org/app:latest"
+  image                String?
+  /// {installCommand, buildCommand, startCommand, outputDirectory, dockerfilePath, composeFile, nodeVersion, buildArgs, ...}
+  buildSettings        Json                @default("{}")
+  /// git area: {tokenEnc?, deployHooks: [{id,name,branch,tokenEnc,createdAt}], polling: {enabled, intervalSec, lastSha, lastCheckedAt, lastError}, ignoreCommitTags?}
+  gitSettings          Json                @default("{}")
+
+  // Runtime
+  port               Int     @default(3000)
+  healthcheckPath    String? @default("/")
+  replicas           Int     @default(1)
+  cpuLimit           Float?
+  memoryLimitMb      Int?
+  restartPolicy      String  @default("unless-stopped")
+  autoDeploy         Boolean @default(true)
+  previewDeployments Boolean @default(true)
+  /// Extra runtime settings that don't deserve a column yet (drainSeconds, startCommand override, ...)
+  runtimeSettings    Json    @default("{}")
+  /// Deployment protection (dashboard area stores it, runtime/proxy applies it):
+  /// {mode: "none"|"password"|"basic", scope: "previews"|"all", username?, passwordHash? (bcrypt), updatedAt?}
+  protection         Json    @default("{}")
+
+  createdById    String?
+  createdBy      User?     @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  lastDeployedAt DateTime?
+  pausedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  deployments        Deployment[]
+  envVars            EnvVar[]
+  sharedEnvGroups    ProjectSharedEnvGroup[]
+  domains            Domain[]
+  volumes            Volume[]
+  cronJobs           CronJob[]
+  databases          Database[]
+  uploads            Upload[]
+  webhooks           Webhook[]
+  notifications      Notification[]
+  metricSamples      MetricSample[]
+  agentConversations AgentConversation[]
+  /// LevantBase backend owned by this project (one per project)
+  baseProject        BaseProject?
+  /// builder-core: AI-builder app that publishes to this project
+  builderProject     BuilderProject?
+
+  @@unique([teamId, slug])
+  @@index([githubRepoId])
+  @@index([teamId, updatedAt])
+}
+
+model Deployment {
+  id        String            @id @default(cuid())
+  /// short random id used in the URL `{project}-{shortId}.{PLATFORM_DOMAIN}`
+  shortId   String            @unique
+  projectId String
+  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// per-project sequence number (#1, #2, …)
+  number    Int
+  target    DeploymentTarget  @default(PREVIEW)
+  status    DeploymentStatus  @default(QUEUED)
+  trigger   DeploymentTrigger @default(MANUAL)
+
+  // Source info
+  branch             String?
+  commitSha          String?
+  commitMessage      String?
+  commitAuthor       String?
+  commitAuthorAvatar String?
+  prNumber           Int?
+  uploadId           String?
+  upload             Upload? @relation(fields: [uploadId], references: [id], onDelete: SetNull)
+  /// set for redeploy / promote / rollback
+  sourceDeploymentId String?
+
+  // Build / runtime outputs
+  framework    String?
+  imageTag     String?
+  /// [{id, name, replica, port}] — written by runtime
+  containerIds Json    @default("[]")
+  /// hostname (no scheme), e.g. "shop-a1b2c3d4e.levant.app"
+  url          String  @unique
+
+  buildStartedAt  DateTime?
+  buildFinishedAt DateTime?
+  deployStartedAt DateTime?
+  readyAt         DateTime?
+  finishedAt      DateTime?
+  /// total ms from creation to READY/ERROR
+  duration        Int?
+  stoppedAt       DateTime?
+  errorMessage    String?
+  /// "BUILD" | "DEPLOY" | "HEALTHCHECK" | ...
+  errorStep       String?
+
+  isCurrentProduction Boolean  @default(false)
+  createdById         String?
+  createdBy           User?    @relation("DeploymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  meta                Json     @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  events        DeploymentEvent[]
+  logArchives   LogArchive[]
+  metricSamples MetricSample[]
+
+  @@unique([projectId, number])
+  @@index([projectId, createdAt])
+  @@index([projectId, target, status])
+  @@index([projectId, branch])
+  @@index([status])
+}
+
+/// Status timeline of a deployment (written by setStatus()).
+model DeploymentEvent {
+  id           String            @id @default(cuid())
+  deploymentId String
+  deployment   Deployment        @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  fromStatus   DeploymentStatus?
+  status       DeploymentStatus
+  message      String?
+  createdAt    DateTime          @default(now())
+
+  @@index([deploymentId, createdAt])
+}
+
+/// gzip archive of a deployment's log stream: STORAGE_DIR/logs/...
+model LogArchive {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  stream       LogStream
+  /// path relative to STORAGE_DIR, e.g. "logs/<id>.log.gz"
+  path         String
+  sizeBytes    Int
+  lineCount    Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([deploymentId, stream])
+}
+
+// ───────────────────────────── Environment ─────────────────────────────
+
+/// Belongs to a project (projectId) OR to a shared group (groupId).
+model EnvVar {
+  id          String          @id @default(cuid())
+  projectId   String?
+  project     Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  groupId     String?
+  group       SharedEnvGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  key         String
+  /// encryptString(value)
+  valueEnc    String
+  targets     EnvTarget[]     @default([PRODUCTION, PREVIEW, DEVELOPMENT])
+  isSecret    Boolean         @default(false)
+  /// preview-only override for a single branch
+  branch      String?
+  comment     String?
+  createdById String?
+  createdBy   User?           @relation("EnvVarCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([projectId, key])
+  @@index([groupId, key])
+}
+
+model SharedEnvGroup {
+  id          String   @id @default(cuid())
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vars     EnvVar[]
+  projects ProjectSharedEnvGroup[]
+
+  @@unique([teamId, name])
+}
+
+model ProjectSharedEnvGroup {
+  projectId String
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  groupId   String
+  group     SharedEnvGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@id([projectId, groupId])
+  @@index([groupId])
+}
+
+// ───────────────────────────── Domains, volumes, cron ─────────────────────────────
+
+model Domain {
+  id             String       @id @default(cuid())
+  projectId      String
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hostname       String       @unique
+  kind           DomainKind   @default(CUSTOM)
+  status         DomainStatus @default(PENDING)
+  /// value for the TXT record `_levant-verify.{hostname}`
+  verifyToken    String
+  verifiedAt     DateTime?
+  redirectTo     String?
+  /// 301 | 302 | 307 | 308
+  redirectStatus Int?
+  /// domain pinned to a git branch (latest preview of that branch) instead of production
+  gitBranch      String?
+  /// "PENDING" | "ISSUED" | "FAILED"
+  certStatus     String?
+  lastCheckedAt  DateTime?
+  /// runtime area: when the domains worker checks DNS next (null = asap)
+  nextCheckAt    DateTime?
+  /// runtime area: last DNS lookup result {a, aaaa, cname, txt, ok, routing, ownership}
+  dnsRecords     Json?
+  lastError      String?
+  isPrimary      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model Volume {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  mountPath  String
+  /// free text like "1GB" (informational, docker local volumes are not size-limited)
+  sizeHint   String?
+  /// docker volume name, e.g. "levant_<projectId>_<name>"
+  dockerName String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([projectId, name])
+}
+
+model CronJob {
+  id             String        @id @default(cuid())
+  projectId      String
+  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name           String
+  /// 5-field cron expression
+  schedule       String
+  timezone       String        @default("UTC")
+  /// run a command inside a one-off container of the current production image …
+  command        String?
+  /// … or send an HTTP GET to this path on the production deployment
+  path           String?
+  enabled        Boolean       @default(true)
+  lastRunAt      DateTime?
+  lastStatus     JobRunStatus?
+  lastDurationMs Int?
+  nextRunAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  runs CronRun[]
+
+  @@index([projectId])
+  @@index([enabled, nextRunAt])
+}
+
+model CronRun {
+  id         String       @id @default(cuid())
+  cronJobId  String
+  cronJob    CronJob      @relation(fields: [cronJobId], references: [id], onDelete: Cascade)
+  status     JobRunStatus @default(RUNNING)
+  /// runtime area: "SCHEDULED" | "MANUAL"
+  trigger    String       @default("SCHEDULED")
+  durationMs Int?
+  exitCode   Int?
+  /// truncated output (last ~16KB)
+  output     String?
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+
+  @@index([cronJobId, startedAt])
+}
+
+// ───────────────────────────── Databases add-on ─────────────────────────────
+
+model Database {
+  id              String         @id @default(cuid())
+  teamId          String
+  team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  projectId       String?
+  project         Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  name            String
+  engine          DatabaseEngine
+  version         String
+  /// encryptJson({user, password, database, ...})
+  credentialsEnc  String
+  status          DatabaseStatus @default(PROVISIONING)
+  containerId     String?
+  volumeName      String?
+  /// hostname on levant_net, e.g. "ld-db-<id>"
+  internalHost    String?
+  port            Int
+  /// exposed on the host when public access is enabled
+  publicPort      Int?           @unique
+  /// cron expression, null = no scheduled backups
+  backupSchedule  String?
+  backupRetention Int            @default(7)
+  lastError       String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  backups Backup[]
+
+  @@unique([teamId, name])
+  @@index([projectId])
+}
+
+model Backup {
+  id         String       @id @default(cuid())
+  databaseId String
+  database   Database     @relation(fields: [databaseId], references: [id], onDelete: Cascade)
+  status     BackupStatus @default(PENDING)
+  /// "SCHEDULED" | "MANUAL"
+  trigger    String       @default("MANUAL")
+  /// path relative to STORAGE_DIR, e.g. "backups/<dbId>/<ts>.sql.gz"
+  path       String?
+  sizeBytes  Int?
+  error      String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime     @default(now())
+
+  @@index([databaseId, createdAt])
+}
+
+// ───────────────────────────── Sources ─────────────────────────────
+
+/// Tarball uploaded by the CLI or dashboard (chunked).
+model Upload {
+  id             String       @id @default(cuid())
+  teamId         String
+  team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  projectId      String?
+  project        Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// path relative to STORAGE_DIR, e.g. "uploads/<id>.tar.gz"
+  path           String
+  /// bytes (Int: uploads are capped well below 2 GiB)
+  size           Int          @default(0)
+  sha256         String?
+  status         UploadStatus @default(PENDING)
+  totalChunks    Int?
+  receivedChunks Int          @default(0)
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  deployments Deployment[]
+
+  @@index([teamId])
+  @@index([status, expiresAt])
+}
+
+model GitHubInstallation {
+  id                  String    @id @default(cuid())
+  installationId      Int       @unique
+  teamId              String?
+  team                Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  accountLogin        String
+  /// "User" | "Organization"
+  accountType         String
+  accountAvatar       String?
+  /// "all" | "selected"
+  repositorySelection String?
+  suspendedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  projects Project[]
+
+  @@index([teamId])
+}
+
+// ───────────────────────────── Notifications ─────────────────────────────
+
+/// Outgoing webhook (signed with secret).
+model Webhook {
+  id             String    @id @default(cuid())
+  teamId         String
+  team           Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url            String
+  /// e.g. ["deployment.ready","deployment.error"]
+  events         String[]  @default([])
+  secretEnc      String
+  enabled        Boolean   @default(true)
+  lastDeliveryAt DateTime?
+  lastStatus     Int?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([teamId])
+}
+
+/// Notification channel (EMAIL / WEBHOOK / TELEGRAM / SLACK).
+model Notification {
+  id         String           @id @default(cuid())
+  teamId     String
+  team       Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  projectId  String?
+  project    Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type       NotificationType
+  name       String
+  /// encryptJson({to} | {url} | {botToken, chatId} | {webhookUrl})
+  configEnc  String
+  events     String[]         @default(["deployment.error"])
+  enabled    Boolean          @default(true)
+  lastSentAt DateTime?
+  lastError  String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([teamId])
+}
+
+/// In-app notification (bell) for one user. Written by the dashboard `notify` processor.
+model UserNotification {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId       String?
+  projectId    String?
+  deploymentId String?
+  /// "deployment.ready" | "deployment.error" | ...
+  kind         String
+  title        String
+  body         String?
+  /// dashboard path to open, e.g. "/team/project/deployments/<id>"
+  href         String?
+  /// idempotency key (e.g. "<event>:<deploymentId>") — job retries never duplicate
+  dedupeKey    String
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
+}
+
+// ───────────────────────────── Infrastructure ─────────────────────────────
+
+/// Single local server row for now (kept for future multi-server).
+model Server {
+  id            String       @id @default(cuid())
+  name          String       @default("local")
+  host          String       @default("localhost")
+  isLocal       Boolean      @default(true)
+  dockerSocket  String       @default("/var/run/docker.sock")
+  status        ServerStatus @default(ONLINE)
+  cpuCount      Int?
+  memoryMb      Int?
+  diskGb        Int?
+  dockerVersion String?
+  lastSeenAt    DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  metricSamples MetricSample[]
+}
+
+/// Container metrics rolled up per minute.
+model MetricSample {
+  id               String      @id @default(cuid())
+  projectId        String?
+  project          Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deploymentId     String?
+  deployment       Deployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  serverId         String?
+  server           Server?     @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  containerId      String?
+  /// start of the minute
+  bucket           DateTime
+  cpuPercent       Float       @default(0)
+  memoryBytes      Float       @default(0)
+  memoryLimitBytes Float?
+  netRxBytes       Float       @default(0)
+  netTxBytes       Float       @default(0)
+  blockReadBytes   Float       @default(0)
+  blockWriteBytes  Float       @default(0)
+  requests         Int?
+  errors           Int?
+  /// runtime area: "container" (docker stats) | "http" (Caddy access log rollup, containerId null)
+  kind             String      @default("container")
+  /// runtime area: container restart count at the end of the minute
+  restarts         Int?
+  /// runtime area (http rows): 4xx responses, latency percentiles in ms
+  status4xx        Int?
+  p50Ms            Float?
+  p95Ms            Float?
+
+  @@index([projectId, bucket])
+  @@index([projectId, kind, bucket])
+  @@index([deploymentId, bucket])
+  @@index([serverId, bucket])
+}
+
+/// Key/value platform settings (typed accessors in src/lib/settings.ts).
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────────── AI agent ─────────────────────────────
+
+model AgentConversation {
+  id        String   @id @default(cuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  title     String   @default("New conversation")
+  model     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages AgentMessage[]
+  actions  AgentAction[]
+
+  @@index([teamId, updatedAt])
+  @@index([projectId, updatedAt])
+}
+
+model AgentMessage {
+  id             String            @id @default(cuid())
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           AgentMessageRole
+  /// Anthropic content blocks (array) or {text}
+  content        Json
+  tokensIn       Int?
+  tokensOut      Int?
+  createdAt      DateTime          @default(now())
+
+  actions AgentAction[]
+
+  @@index([conversationId, createdAt])
+}
+
+model AgentAction {
+  id               String            @id @default(cuid())
+  conversationId   String
+  conversation     AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messageId        String?
+  message          AgentMessage?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  /// tool_use id from the model
+  toolUseId        String?
+  tool             String
+  input            Json
+  output           Json?
+  status           AgentActionStatus @default(RUNNING)
+  requiresApproval Boolean           @default(false)
+  approvedById     String?
+  approvedBy       User?             @relation("AgentActionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt       DateTime?
+  error            String?
+  createdAt        DateTime          @default(now())
+  finishedAt       DateTime?
+
+  @@index([conversationId, createdAt])
+  @@index([status])
+}
+
+// ───────────────────────────── LevantBase (base-runtime area) ─────────────────────────────
+
+enum BaseStatus {
+  PROVISIONING
+  ACTIVE
+  PAUSING
+  PAUSED
+  RESTORING
+  UPGRADING
+  ERROR
+  DELETING
+}
+
+enum BaseBackupStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+/// One self-hosted backend stack (db, auth, rest, realtime, storage, functions, meta, gateway, studio on demand).
+model BaseProject {
+  id             String     @id @default(cuid())
+  teamId         String
+  team           Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Deploy project that owns this backend (optional; same team)
+  projectId      String?    @unique
+  project        Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  /// 20-char lowercase id: {ref}.{BASE_DOMAIN}, compose project lb_{ref}
+  ref            String     @unique
+  name           String
+  region         String     @default("local")
+  status         BaseStatus @default(PROVISIONING)
+  statusMessage  String?
+  /// encryptJson(BaseSecrets): postgres password, JWT secret, anon/service keys, internal keys
+  secretsEnc     String
+  /// image per service ({db: "supabase/postgres:17.6.1.136", ...}) the stack was rendered with
+  versions       Json       @default("{}")
+  /// {auth: {...}, smtp: {...}, providers: {...}, limits: {...}} — see src/lib/base/settings.ts
+  settings       Json       @default("{}")
+  dbPublicPort   Int?
+  lastActivityAt DateTime?
+  pausedAt       DateTime?
+  createdById    String?
+  createdBy      User?      @relation("BaseProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  backups      BaseBackup[]
+  functions    BaseFunction[]
+  usageSamples BaseUsageSample[]
+  events       BaseEvent[]
+
+  @@index([teamId, createdAt])
+  @@index([status])
+}
+
+model BaseBackup {
+  id               String           @id @default(cuid())
+  baseProjectId    String
+  baseProject      BaseProject      @relation(fields: [baseProjectId], references: [id], onDelete: Cascade)
+  /// MANUAL | SCHEDULED | PRE_RESTORE
+  kind             String           @default("MANUAL")
+  status           BaseBackupStatus @default(RUNNING)
+  /// path relative to STORAGE_DIR (base/{ref}/backups/<file>.sql.gz)
+  path             String?
+  sizeBytes        BigInt?
+  /// storage files (tar.gz of the storage volume), relative to STORAGE_DIR; null = none / older backup
+  storagePath      String?
+  storageSizeBytes BigInt?
+  error            String?
+  createdById      String?
+  createdAt        DateTime         @default(now())
+  finishedAt       DateTime?
+  restoredAt       DateTime?
+
+  @@index([baseProjectId, createdAt])
+}
+
+model BaseFunction {
+  id            String      @id @default(cuid())
+  baseProjectId String
+  baseProject   BaseProject @relation(fields: [baseProjectId], references: [id], onDelete: Cascade)
+  name          String
+  slug          String
+  verifyJwt     Boolean     @default(true)
+  /// path relative to the project dir (volumes/functions/<slug>/index.ts)
+  sourcePath    String
+  version       Int         @default(1)
+  sha256        String?
+  deployedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([baseProjectId, slug])
+}
+
+model BaseUsageSample {
+  id                  String      @id @default(cuid())
+  baseProjectId       String
+  baseProject         BaseProject @relation(fields: [baseProjectId], references: [id], onDelete: Cascade)
+  at                  DateTime    @default(now())
+  dbSizeBytes         BigInt      @default(0)
+  storageSizeBytes    BigInt      @default(0)
+  /// monthly active users (auth.users with last_sign_in_at in the current month)
+  mau                 Int         @default(0)
+  /// since the previous sample (Caddy access log)
+  requests            Int         @default(0)
+  functionInvocations Int         @default(0)
+  egressBytes         BigInt      @default(0)
+
+  @@index([baseProjectId, at])
+}
+
+model BaseEvent {
+  id            String      @id @default(cuid())
+  baseProjectId String
+  baseProject   BaseProject @relation(fields: [baseProjectId], references: [id], onDelete: Cascade)
+  /// provision | pause | resume | restart | upgrade | delete | backup | restore | studio | settings | functions | status | error
+  type          String
+  /// info | success | warning | error
+  level         String      @default("info")
+  message       String
+  meta          Json?
+  actorId       String?
+  createdAt     DateTime    @default(now())
+
+  @@index([baseProjectId, createdAt])
+}
+
+// ───────────────────────────── Plans & limits (plans area, wave C) ─────────────────────────────
+
+/// A plan (Hobby, Pro, Team, internal Unlimited). `limits` = PlanLimits JSON (src/lib/plans/limits.ts): { deploy: {...}, base: {...}, enforce: {...} }; null value = unlimited.
+model Plan {
+  id           String    @id @default(cuid())
+  slug         String    @unique
+  name         String
+  description  String?
+  /// display only (no billing yet), whole currency units per month
+  priceMonthly Int?
+  limits       Json
+  /// assigned to teams without an explicit plan (exactly one plan should be default)
+  isDefault    Boolean   @default(false)
+  /// hidden from the upgrade options shown to teams (platform owner's unlimited plan)
+  isInternal   Boolean   @default(false)
+  sortOrder    Int       @default(0)
+  archivedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  teams    Team[]
+  requests PlanUpgradeRequest[]
+}
+
+/// Persistent metered counters that outlive MetricSample retention (e.g. monthly bandwidth). period = "YYYY-MM".
+model UsageCounter {
+  id        String    @id @default(cuid())
+  teamId    String
+  team      Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  period    String
+  /// e.g. "deploy.bandwidthBytes"
+  resource  String
+  value     Float     @default(0)
+  /// last MetricSample bucket included (incremental aggregation)
+  cursor    DateTime?
+  updatedAt DateTime  @updatedAt
+
+  @@unique([teamId, period, resource])
+}
+
+/// One row per quota notification sent (dedupe): level 80 | 100, period "YYYY-MM" (monthly) or "YYYY-MM-DD" (daily) or "now".
+model PlanUsageAlert {
+  id        String   @id @default(cuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  resource  String
+  period    String
+  level     Int
+  used      Float
+  limit     Float
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, resource, period, level])
+  @@index([teamId, createdAt])
+}
+
+/// "Request upgrade" from Settings → Plan & Usage (no payments yet → the platform owner assigns the plan).
+model PlanUpgradeRequest {
+  id            String    @id @default(cuid())
+  teamId        String
+  team          Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  requestedById String?
+  requestedBy   User?     @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  planId        String?
+  plan          Plan?     @relation(fields: [planId], references: [id], onDelete: SetNull)
+  message       String?
+  /// OPEN | APPROVED | DISMISSED
+  status        String    @default("OPEN")
+  handledAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([teamId])
+}
+
+/// Email verification links (only sha256(token) stored).
+model EmailVerification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ───────────────────────────── Builder (wave E, builder-core) ─────────────────────────────
+
+enum BuilderRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+enum BuilderMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+/// One AI-builder app. Workspace = STORAGE_DIR/builder/{id}/repo (local git repo).
+model BuilderProject {
+  id                  String    @id @default(cuid())
+  teamId              String
+  team                Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Deploy project this app publishes to (created on first publish)
+  projectId           String?   @unique
+  project             Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  /// LevantBase backend ref (BaseProject.ref) attached to this app
+  baseRef             String?
+  name                String
+  description         String?
+  /// The initial "what do you want to build?" prompt
+  prompt              String?
+  /// template id (builder-template/<template>), e.g. "next15"
+  template            String    @default("next15")
+  /// DRAFT | GENERATING | READY | ERROR (agents set GENERATING while a run is active)
+  status              String    @default("DRAFT")
+  /// STOPPED | STARTING | RUNNING | ERROR
+  previewStatus       String    @default("STOPPED")
+  previewError        String?
+  previewStartedAt    DateTime?
+  previewLastActiveAt DateTime?
+  /// {knowledge?: string, instructions?: string, theme?: {...}, model?: {...}, share?: {tokenHash, expiresAt}}
+  settings            Json      @default("{}")
+  /// HEAD commit sha of the workspace repo (cached)
+  lastCommit          String?
+  lastDeploymentId    String?
+  lastPublishedAt     DateTime?
+  createdById         String?
+  createdBy           User?     @relation("BuilderProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  messages BuilderMessage[]
+  runs     BuilderRun[]
+
+  @@index([teamId, updatedAt])
+  @@index([previewStatus])
+}
+
+model BuilderMessage {
+  id               String             @id @default(cuid())
+  builderProjectId String
+  builderProject   BuilderProject     @relation(fields: [builderProjectId], references: [id], onDelete: Cascade)
+  role             BuilderMessageRole
+  content          String
+  /// [{kind: "image"|"file"|"element", name?, url?, src? (data-lv-src), text?}]
+  attachments      Json               @default("[]")
+  /// commit produced by this message (assistant) / visual edit
+  commitSha        String?
+  agentRunId       String?
+  agentRun         BuilderRun?        @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  authorId         String?
+  author           User?              @relation("BuilderMessageAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  meta             Json               @default("{}")
+  createdAt        DateTime           @default(now())
+
+  @@index([builderProjectId, createdAt])
+}
+
+model BuilderRun {
+  id                String           @id @default(cuid())
+  builderProjectId  String
+  builderProject    BuilderProject   @relation(fields: [builderProjectId], references: [id], onDelete: Cascade)
+  status            BuilderRunStatus @default(QUEUED)
+  /// build (from prompt) | edit (chat turn) | fix | other
+  kind              String           @default("edit")
+  prompt            String?
+  plan              Json?
+  /// [{role, title, status, startedAt, finishedAt, commitSha?}]
+  steps             Json             @default("[]")
+  /// {byProvider: {gemini: {calls, inTokens, outTokens}}, total: {...}}
+  usage             Json             @default("{}")
+  error             String?
+  /// HEAD before the run / last commit made by the run
+  baseCommit        String?
+  resultCommit      String?
+  /// builder-agents: current orchestrator phase (plan|backend|design|code|check|summarize|answer|done)
+  phase             String?
+  /// builder-agents: resumable orchestrator checkpoint (RunState in src/lib/builder/agents/types.ts)
+  state             Json?
+  createdById       String?
+  createdBy         User?            @relation("BuilderRunCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  cancelRequestedAt DateTime?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  events   BuilderRunEvent[]
+  messages BuilderMessage[]
+
+  @@index([builderProjectId, createdAt])
+  @@index([status])
+}
+
+/// Persisted stream of run events (also published on Redis pub/sub for SSE).
+model BuilderRunEvent {
+  id        String     @id @default(cuid())
+  runId     String
+  run       BuilderRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int
+  /// e.g. status | step | message | delta | tool_call | tool_result | commit | error | usage
+  type      String
+  data      Json       @default("{}")
+  createdAt DateTime   @default(now())
+
+  @@unique([runId, seq])
+}
+
+// ───────────────────────────── LLM router (llm area) ─────────────────────────────
+
+/// One row per LLM attempt made through src/lib/llm (success or failure). No relations on purpose (accounting survives deletes).
+model LlmUsage {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  provider     String
+  model        String
+  /// plan | code | fix | judge | chat | vision | fast
+  purpose      String
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  latencyMs    Int      @default(0)
+  ok           Boolean
+  errorCode    String?
+  error        String?
+  teamId       String?
+  runId        String?
+
+  @@index([createdAt])
+  @@index([provider, model, createdAt])
+  @@index([teamId, createdAt])
+  @@index([runId])
+}

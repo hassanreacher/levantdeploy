@@ -1,0 +1,29 @@
+{
+  "name": "levant",
+  "version": "0.1.0",
+  "description": "LevantDeploy CLI — deploy any folder to your own LevantDeploy server",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "levant": "dist/index.js" },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "commander": "12.1.0",
+    "ignore": "5.3.2",
+    "open": "10.1.0",
+    "picocolors": "1.1.1",
+    "tar": "7.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

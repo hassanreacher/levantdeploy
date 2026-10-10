@@ -1,0 +1,2 @@
+jose 6.2.12 (npm "jose", dist/webapi build, MIT, github.com/panva/jose) — same library as jsr:@panva/jose@6.
+Vendored by LevantBase so the edge-runtime main router boots without outbound internet.

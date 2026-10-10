@@ -1,0 +1,15 @@
+{
+  "name": "levantbase-compat",
+  "private": true,
+  "description": "LevantBase client compatibility suite: the official @supabase/supabase-js client against a real LevantBase project (through Caddy, HTTPS)",
+  "type": "module",
+  "scripts": {
+    "compat": "tsx run.ts"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "2.117.3",
+    "undici": "6.22.0",
+    "ws": "8.18.3",
+    "@types/ws": "8.18.1"
+  }
+}

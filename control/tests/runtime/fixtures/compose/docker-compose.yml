@@ -1,0 +1,14 @@
+services:
+  web:
+    image: runtime-test-node:v1
+    ports: ["8080:3000"]
+    environment:
+      REDIS_URL: redis://default:composepass@cache:6379
+      GREETING: from-compose
+    depends_on: [cache]
+  cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "composepass"]
+    volumes: ["cachedata:/data"]
+volumes:
+  cachedata: {}

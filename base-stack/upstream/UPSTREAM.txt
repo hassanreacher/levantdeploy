@@ -1,0 +1,1 @@
+Upstream: github.com/supabase/supabase docker/ @ 8617532ae1a41571d5d557cd24c6f5f2565d9230 (2026-10-09), Apache-2.0
